@@ -49,6 +49,14 @@ export default function PupdateApp() {
     queueMicrotask(() => { void hydrate(stored).catch(reason => { saveSession(null); setError(reason.message); }).finally(() => setLoading(false)); });
   }, [hydrate]);
 
+  useEffect(() => {
+    if (!session) return;
+    const timer = window.setInterval(() => {
+      void ensureSession(session).then(next => setSession(next)).catch(() => { saveSession(null); setSession(null); });
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [session]);
+
   async function authenticated(next: Session) { setLoading(true); setError(""); try { await hydrate(next); } catch (reason) { setError(message(reason)); } finally { setLoading(false); } }
   async function reload() { if (session) await hydrate(session); }
   async function logout() { if (!session) return; await signOut(session); setSession(null); setProfile(null); setDog(null); setPosts([]); setTab("feed"); setAuthView("welcome"); }
