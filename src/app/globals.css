@@ -11,6 +11,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .font-serif { font-family: Georgia, "Times New Roman", serif; }
 .field { width: 100%; border: 1px solid rgb(40 36 45 / 0.08); border-radius: 18px; background: #fff; padding: 14px 15px; color: #342d39; box-shadow: 0 2px 10px rgb(45 35 55 / 0.03); }
 .field::placeholder { color: #aea4b0; }
+.primary { width: 100%; border-radius: 9999px; background: #7450a8; padding: 1rem 1.25rem; color: white; font-size: .875rem; font-weight: 700; box-shadow: 0 10px 24px rgb(116 80 168 / .2); }
+.primary:disabled { cursor: not-allowed; opacity: .45; }
+.secondary { width: 100%; border-radius: 9999px; border: 1px solid rgb(116 80 168 / .3); background: white; padding: .9rem 1.25rem; color: #67428f; font-size: .875rem; font-weight: 700; }
 .scrollbar-none { scrollbar-width: none; }
 .scrollbar-none::-webkit-scrollbar { display: none; }
 article > .px-4.pb-4.pt-3 > .flex.flex-wrap.gap-2 > button:first-child { display: none; }
