@@ -92,14 +92,34 @@ export async function db<T>(session: Session, table: string, query = "", init: R
 }
 
 export async function upload(session: Session, bucket: "avatars" | "pupdates", file: File) {
-  const extension = file.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+  if (!file.type.startsWith("image/")) throw new Error("Please choose an image file.");
+  const prepared = await prepareImage(file, bucket === "avatars" ? 4_500_000 : 9_000_000);
+  const extension = prepared.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
   const path = `${session.user.id}/${crypto.randomUUID()}.${extension}`;
   const response = await fetch(`${url}/storage/v1/object/${bucket}/${path}`, {
-    method: "POST", body: file,
-    headers: { apikey: key, Authorization: `Bearer ${session.access_token}`, "Content-Type": file.type || "application/octet-stream", "x-upsert": "false" },
+    method: "POST", body: prepared,
+    headers: { apikey: key, Authorization: `Bearer ${session.access_token}`, "Content-Type": prepared.type, "x-upsert": "false" },
   });
   if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.message || payload.error || "Photo upload failed."); }
   return path;
+}
+
+async function prepareImage(file: File, maxBytes: number) {
+  if (file.size <= maxBytes && file.type !== "image/heic" && file.type !== "image/heif") return file;
+  let bitmap: ImageBitmap;
+  try { bitmap = await createImageBitmap(file); } catch { throw new Error("This photo format cannot be processed. Please choose a JPG, PNG or WebP image."); }
+  const longest = Math.max(bitmap.width, bitmap.height);
+  const scale = Math.min(1, 2048 / longest);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  for (const quality of [0.86, 0.76, 0.64, 0.52]) {
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", quality));
+    if (blob && blob.size <= maxBytes) return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
+  }
+  throw new Error(`This photo is still too large after resizing. Please choose an image under ${Math.round(maxBytes / 1_000_000)} MB.`);
 }
 
 export async function removeUpload(session: Session, bucket: "avatars" | "pupdates", path: string) {
