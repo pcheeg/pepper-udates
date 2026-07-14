@@ -41,7 +41,16 @@ export default function PupdateApp() {
     if (hash.get("access_token") && hash.get("refresh_token")) {
       const next: Session = { access_token: hash.get("access_token")!, refresh_token: hash.get("refresh_token")!, expires_at: Math.floor(Date.now() / 1000) + Number(hash.get("expires_in") ?? 3600), user: { id: "" } };
       fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/user`, { headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "", Authorization: `Bearer ${next.access_token}` } })
-        .then(response => response.json()).then(user => { next.user = user; saveSession(next); setSession(next); setAuthView("reset"); }).finally(() => setLoading(false));
+        .then(response => response.json()).then(user => {
+          next.user = user;
+          saveSession(next);
+          if (hash.get("type") === "recovery") {
+            setSession(next);
+            setAuthView("reset");
+          } else {
+            void hydrate(next).catch(reason => setError(message(reason)));
+          }
+        }).finally(() => setLoading(false));
       window.history.replaceState({}, "", window.location.pathname); return;
     }
     const stored = readSession();
