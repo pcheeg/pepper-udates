@@ -6,7 +6,7 @@ import { BellIcon, BookIcon, CameraIcon, ChevronIcon, HomeIcon, MoreIcon, PlusIc
 import { db, ensureSession, forgotPassword, logIn, readSession, removeUpload, saveSession, Session, signedUrl, signOut, signUp, supabaseConfigured, updatePassword, upload } from "@/lib/supabase";
 
 type Profile = { id: string; display_name: string; avatar_path: string | null; onboarding_complete: boolean };
-type Dog = { id: string; owner_id: string; name: string; breed: string; birthday: string; bio: string | null; photo_path: string | null };
+type Dog = { id: string; owner_id: string; name: string; breed: string; birthday: string; bio: string | null; photo_path: string | null; avatar_path: string | null };
 type Photo = { id: string; pupdate_id: string; storage_path: string; sort_order: number; url?: string };
 type Post = { id: string; owner_id: string; caption: string; location: string | null; event_date: string | null; tags: string[]; created_at: string; photos: Photo[] };
 type CareEvent = { id: string; dog_id: string; event_type: "walk" | "feed"; occurred_at: string; created_at: string };
@@ -86,7 +86,7 @@ export default function PupdateApp() {
     {tab === "feed" && <Feed posts={posts} dog={dog} profile={profile} onCreate={() => setTab("add")} onChanged={reload} session={session} setError={setError} />}
     {tab === "add" && <AddPupdate session={session} onCreated={async () => { await reload(); setTab("feed"); }} setError={setError} />}
     {tab === "scrapbook" && <Scrapbook posts={posts} dog={dog} />}
-    {tab === "pepper" && <PepperProfile session={session} dog={dog} posts={posts} careEvents={careEvents} onChanged={reload} setError={setError} />}
+    {tab === "pepper" && <PepperProfileV2 session={session} dog={dog} posts={posts} careEvents={careEvents} onChanged={reload} setError={setError} />}
     {tab === "profile" && <UserProfile session={session} profile={profile} onChanged={reload} onSignOut={logout} setError={setError} />}
     <BottomNav tab={tab} setTab={setTab} />
   </div>;
@@ -147,7 +147,7 @@ function message(reason: unknown) { return reason instanceof Error ? reason.mess
 function AppHeader({ dog, profile, session, onPepper, onProfile }: { dog: Dog; profile: Profile; session: Session; onPepper: () => void; onProfile: () => void }) {
   const [dogUrl, setDogUrl] = useState<string | null>(null);
   const [avatar, setAvatar] = useState<string | null>(null);
-  useEffect(() => { void signedUrl(session, "avatars", dog.photo_path).then(setDogUrl); void signedUrl(session, "avatars", profile.avatar_path).then(setAvatar); }, [dog.photo_path, profile.avatar_path, session]);
+  useEffect(() => { void signedUrl(session, "avatars", dog.avatar_path ?? dog.photo_path).then(setDogUrl); void signedUrl(session, "avatars", profile.avatar_path).then(setAvatar); }, [dog.avatar_path, dog.photo_path, profile.avatar_path, session]);
   return <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-black/[.05] bg-[#fbf8f3]/95 px-4 py-3 backdrop-blur"><button onClick={onPepper} aria-label={`Open ${dog.name}'s profile`} className="relative size-11 overflow-hidden rounded-full bg-[#e8deee]">{dogUrl ? <Image src={dogUrl} alt={dog.name} fill sizes="44px" className="object-cover" /> : <span className="text-xl">🐾</span>}</button><button onClick={onPepper} className="min-w-0 flex-1 text-left"><Logo compact /><p className="truncate text-[11px] font-semibold text-[#887d8c]">{dog.name} the {dog.breed}</p></button><button aria-label="Notifications" className="grid size-10 place-items-center rounded-full bg-white"><BellIcon className="size-5" /></button><button onClick={onProfile} aria-label="Open your profile" className="relative size-9 overflow-hidden rounded-full bg-[#7450a8] text-xs font-bold text-white">{avatar ? <Image src={avatar} alt={profile.display_name} fill sizes="36px" className="object-cover" /> : profile.display_name.slice(0, 1).toUpperCase()}</button></header>;
 }
 
@@ -174,4 +174,69 @@ function PepperProfile({ session, dog, posts, careEvents, onChanged, setError }:
   return <main><div className="relative h-64 overflow-hidden bg-[#eee6f5]">{url ? <Image src={url} alt={dog.name} fill sizes="680px" className="object-cover" /> : <span className="grid h-full place-items-center text-8xl">🐾</span>}<div className="absolute inset-0 bg-gradient-to-t from-[#35243b]/70 via-transparent to-transparent" /><div className="absolute bottom-5 left-5 text-white"><p className="text-xs font-bold uppercase tracking-[.15em]">{dog.breed}</p><h1 className="font-serif text-4xl font-bold">{dog.name}</h1></div></div><section className="px-5 py-6 sm:px-7"><div className="flex items-start justify-between gap-4"><div><p className="text-sm font-bold">Born {new Date(`${dog.birthday}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</p>{dog.bio && <p className="mt-3 text-sm leading-6 text-[#766b7a]">{dog.bio}</p>}</div><button onClick={() => setEditing(!editing)} className="shrink-0 rounded-full bg-[#eee6f5] px-4 py-2 text-xs font-bold text-[#67428f]">{editing ? "Cancel" : "Edit profile"}</button></div>{editing && <form onSubmit={saveProfile} className="mt-5 space-y-4 rounded-[24px] bg-white p-5 shadow-sm"><Field label="Name"><input name="name" defaultValue={dog.name} className="field" required /></Field><Field label="Breed"><input name="breed" defaultValue={dog.breed} className="field" required /></Field><Field label="Birthday"><input name="birthday" type="date" defaultValue={dog.birthday} max={new Date().toISOString().slice(0, 10)} className="field" required /></Field><Field label="Bio (optional)"><textarea name="bio" defaultValue={dog.bio ?? ""} rows={4} maxLength={500} className="field resize-none" /></Field><button className="primary">Save Pepper's profile</button></form>}<div className="mt-5 rounded-[24px] bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#8b62bd]">Pepper's profile photo</p><PhotoManager compact url={url} label={`${dog.name}'s photo`} onChange={replace} onDelete={remove} /></div><section className="mt-7"><p className="text-xs font-bold uppercase tracking-[.15em] text-[#8b62bd]">Private care notes</p><h2 className="mt-1 font-serif text-2xl font-bold">Today with {dog.name}</h2><div className="mt-4 grid grid-cols-2 gap-3">{(["walk", "feed"] as const).map(type => <article key={type} className="rounded-[22px] bg-white p-4 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wider text-[#8f8394]">Last {type === "walk" ? "walked" : "fed"}</p><strong className="mt-2 block font-serif text-lg">{latest(type) ? new Date(latest(type)!.occurred_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "Not recorded"}</strong><button onClick={() => setRecording(type)} className="mt-4 w-full rounded-full bg-[#7450a8] px-3 py-2.5 text-xs font-bold text-white">Record {type}</button></article>)}</div>{recording && <form onSubmit={recordCare} className="mt-4 rounded-[24px] border border-[#d9c7e8] bg-[#faf7fc] p-5"><p className="font-serif text-xl font-bold">Confirm {recording === "walk" ? "walk" : "feed"} time</p><div className="mt-4 grid grid-cols-2 gap-3"><Field label="Date"><input name="date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} max={new Date().toISOString().slice(0, 10)} className="field" required /></Field><Field label="Time"><input name="time" type="time" defaultValue={new Date().toTimeString().slice(0, 5)} className="field" required /></Field></div><button className="primary mt-4">Confirm update</button><button type="button" onClick={() => setRecording(null)} className="mt-2 w-full py-2 text-xs font-bold text-[#7e7085]">Cancel</button></form>}</section><div className="mt-6 grid grid-cols-2 gap-3"><Stat value={posts.length} label="Pupdates" /><Stat value={posts.reduce((n, post) => n + post.photos.length, 0)} label="Memories" /></div></section></main>;
 }
 
-export { Header as LegacyHeader, ProfilePage as LegacyProfilePage };
+function PepperProfileV2({ session, dog, posts, careEvents, onChanged, setError }: { session: Session; dog: Dog; posts: Post[]; careEvents: CareEvent[]; onChanged: () => void; setError: (s: string) => void }) {
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [recording, setRecording] = useState<"walk" | "feed" | null>(null);
+  useEffect(() => {
+    void signedUrl(session, "avatars", dog.photo_path).then(setCoverUrl);
+    void signedUrl(session, "avatars", dog.avatar_path).then(setAvatarUrl);
+  }, [session, dog.photo_path, dog.avatar_path]);
+
+  async function replacePhoto(column: "photo_path" | "avatar_path", file?: File) {
+    if (!file) return;
+    try {
+      const next = await upload(session, "avatars", file);
+      const old = dog[column];
+      await db(session, "dogs", `?id=eq.${dog.id}`, { method: "PATCH", body: JSON.stringify({ [column]: next, updated_at: new Date().toISOString() }) });
+      if (old) await removeUpload(session, "avatars", old);
+      await onChanged();
+    } catch (reason) { setError(message(reason)); }
+  }
+
+  async function removePhoto(column: "photo_path" | "avatar_path") {
+    const old = dog[column];
+    if (!old) return;
+    try {
+      await db(session, "dogs", `?id=eq.${dog.id}`, { method: "PATCH", body: JSON.stringify({ [column]: null, updated_at: new Date().toISOString() }) });
+      await removeUpload(session, "avatars", old);
+      await onChanged();
+    } catch (reason) { setError(message(reason)); }
+  }
+
+  async function saveProfile(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault(); const data = new FormData(e.currentTarget);
+    try {
+      await db(session, "dogs", `?id=eq.${dog.id}`, { method: "PATCH", body: JSON.stringify({ name: String(data.get("name")), breed: String(data.get("breed")), birthday: String(data.get("birthday")), bio: String(data.get("bio")) || null, updated_at: new Date().toISOString() }) });
+      setEditing(false); await onChanged();
+    } catch (reason) { setError(message(reason)); }
+  }
+
+  async function recordCare(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault(); if (!recording) return; const data = new FormData(e.currentTarget);
+    try {
+      await db(session, "care_events", "", { method: "POST", body: JSON.stringify({ owner_id: session.user.id, dog_id: dog.id, event_type: recording, occurred_at: new Date(`${data.get("date")}T${data.get("time")}`).toISOString() }) });
+      setRecording(null); await onChanged();
+    } catch (reason) { setError(message(reason)); }
+  }
+
+  const latest = (type: "walk" | "feed") => careEvents.find(event => event.event_type === type);
+  const birthday = new Date(`${dog.birthday}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "long" });
+  return <main>
+    <div className="relative h-64 overflow-hidden bg-[#eee6f5]">{coverUrl ? <Image src={coverUrl} alt={dog.name} fill sizes="680px" className="object-cover" /> : <span className="grid h-full place-items-center text-8xl">🐾</span>}<div className="absolute inset-0 bg-gradient-to-t from-[#35243b]/70 via-transparent to-transparent" /><div className="absolute bottom-5 left-5 text-white"><p className="text-xs font-bold uppercase tracking-[.15em]">{dog.breed}</p><h1 className="font-serif text-4xl font-bold">{dog.name}</h1></div></div>
+    <section className="px-5 py-6 sm:px-7">
+      <p className="font-serif text-xl font-bold text-[#67428f]">Birthday: {birthday} 🎂 🎉 🐾</p>
+      {dog.bio ? <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-[#766b7a]">{dog.bio}</p> : <p className="mt-3 text-sm italic text-[#94899a]">Add a little about {dog.name}.</p>}
+      <button onClick={() => setEditing(!editing)} className="mt-4 inline-flex min-h-10 items-center justify-center rounded-full bg-[#eee6f5] px-5 text-xs font-bold text-[#67428f]">{editing ? "Cancel editing" : "Edit profile"}</button>
+      {editing && <form onSubmit={saveProfile} className="mt-5 space-y-4 rounded-[24px] bg-white p-5 shadow-sm"><Field label="Name"><input name="name" defaultValue={dog.name} className="field" required /></Field><Field label="Breed"><input name="breed" defaultValue={dog.breed} className="field" required /></Field><Field label="Birthday"><input name="birthday" type="date" defaultValue={dog.birthday} max={new Date().toISOString().slice(0, 10)} className="field" required /></Field><Field label="Bio (optional)"><textarea name="bio" defaultValue={dog.bio ?? ""} rows={5} maxLength={500} className="field resize-none" /></Field><button className="primary">Save Pepper’s profile</button></form>}
+
+      <section className="mt-7"><p className="text-xs font-bold uppercase tracking-[.15em] text-[#8b62bd]">Private care notes</p><h2 className="mt-1 font-serif text-2xl font-bold">Today with {dog.name}</h2><div className="mt-4 grid grid-cols-2 gap-3">{(["walk", "feed"] as const).map(type => <article key={type} className="rounded-[22px] bg-white p-4 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wider text-[#8f8394]">Last {type === "walk" ? "walked" : "fed"}</p><strong className="mt-2 block font-serif text-lg">{latest(type) ? new Date(latest(type)!.occurred_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "Not recorded"}</strong><button onClick={() => setRecording(type)} className="mt-4 w-full rounded-full bg-[#7450a8] px-3 py-2.5 text-xs font-bold text-white">Record {type}</button></article>)}</div>{recording && <form onSubmit={recordCare} className="mt-4 rounded-[24px] border border-[#d9c7e8] bg-[#faf7fc] p-5"><p className="font-serif text-xl font-bold">Confirm {recording === "walk" ? "walk" : "feed"} time</p><div className="mt-4 grid grid-cols-2 gap-3"><Field label="Date"><input name="date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} max={new Date().toISOString().slice(0, 10)} className="field" required /></Field><Field label="Time"><input name="time" type="time" defaultValue={new Date().toTimeString().slice(0, 5)} className="field" required /></Field></div><button className="primary mt-4">Confirm update</button><button type="button" onClick={() => setRecording(null)} className="mt-2 w-full py-2 text-xs font-bold text-[#7e7085]">Cancel</button></form>}</section>
+
+      <section className="mt-7 space-y-3"><h2 className="font-serif text-xl font-bold">Pepper’s photos</h2><div className="rounded-[24px] bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#8b62bd]">Large profile photo</p><p className="mt-1 text-xs text-[#8d8290]">Shown across the top of Pepper’s profile.</p><PhotoManager compact url={coverUrl} label={`${dog.name} profile photo`} onChange={file => replacePhoto("photo_path", file)} onDelete={() => removePhoto("photo_path")} /></div><div className="rounded-[24px] bg-white p-5 shadow-sm"><p className="text-xs font-bold uppercase tracking-[.12em] text-[#8b62bd]">Header icon</p><p className="mt-1 text-xs text-[#8d8290]">Shown in the small circle at the top of the app.</p><PhotoManager compact url={avatarUrl} label={`${dog.name} header icon`} onChange={file => replacePhoto("avatar_path", file)} onDelete={() => removePhoto("avatar_path")} /></div></section>
+      <div className="mt-6 grid grid-cols-2 gap-3"><Stat value={posts.length} label="Pupdates" /><Stat value={posts.reduce((n, post) => n + post.photos.length, 0)} label="Memories" /></div>
+    </section>
+  </main>;
+}
+
+export { Header as LegacyHeader, ProfilePage as LegacyProfilePage, PepperProfile as LegacyPepperProfile };
