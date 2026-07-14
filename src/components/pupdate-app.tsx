@@ -9,7 +9,7 @@ type Profile = { id: string; display_name: string; avatar_path: string | null; o
 type Dog = { id: string; owner_id: string; name: string; breed: string; birthday: string; bio: string | null; photo_path: string | null };
 type Photo = { id: string; pupdate_id: string; storage_path: string; sort_order: number; url?: string };
 type Post = { id: string; owner_id: string; caption: string; location: string | null; event_date: string | null; tags: string[]; created_at: string; photos: Photo[] };
-type Tab = "feed" | "add" | "scrapbook" | "profile";
+type Tab = "feed" | "add" | "scrapbook" | "profile" | "pepper";
 type AuthView = "welcome" | "signup" | "login" | "forgot" | "reset";
 
 export default function PupdateApp() {
@@ -77,12 +77,13 @@ export default function PupdateApp() {
   if (!profile?.onboarding_complete || !dog) return <Onboarding session={session} initialName={String(session.user.user_metadata?.display_name ?? "")} onDone={reload} />;
 
   return <div className="mx-auto min-h-screen max-w-[680px] bg-[#fbf8f3] pb-24 text-[#312b34] shadow-[0_0_70px_rgba(50,35,60,0.08)]">
-    <Header dog={dog} profile={profile} session={session} onProfile={() => setTab("profile")} />
+    <AppHeader dog={dog} profile={profile} session={session} onPepper={() => setTab("pepper")} onProfile={() => setTab("profile")} />
     {error && <Notice text={error} onClose={() => setError("")} />}
     {tab === "feed" && <Feed posts={posts} dog={dog} profile={profile} onCreate={() => setTab("add")} onChanged={reload} session={session} setError={setError} />}
     {tab === "add" && <AddPupdate session={session} onCreated={async () => { await reload(); setTab("feed"); }} setError={setError} />}
     {tab === "scrapbook" && <Scrapbook posts={posts} dog={dog} />}
-    {tab === "profile" && <ProfilePage session={session} profile={profile} dog={dog} posts={posts} onChanged={reload} onSignOut={logout} setError={setError} />}
+    {tab === "pepper" && <PepperProfile session={session} dog={dog} posts={posts} onChanged={reload} setError={setError} />}
+    {tab === "profile" && <UserProfile session={session} profile={profile} onChanged={reload} onSignOut={logout} setError={setError} />}
     <BottomNav tab={tab} setTab={setTab} />
   </div>;
 }
@@ -138,3 +139,28 @@ function Loading() { return <main className="grid min-h-screen place-items-cente
 function SetupRequired() { return <main className="grid min-h-screen place-items-center bg-[#fbf8f3] px-6"><div className="max-w-md rounded-[28px] bg-white p-7 text-center shadow-xl"><Logo /><h1 className="mt-6 font-serif text-2xl font-bold">Supabase connection needed</h1><p className="mt-3 text-sm leading-6 text-[#7b7080]">Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY, then restart the app.</p></div></main>; }
 function formatDate(value: string) { return new Date(value).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }); }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : "Something went wrong. Please try again."; }
+
+function AppHeader({ dog, profile, session, onPepper, onProfile }: { dog: Dog; profile: Profile; session: Session; onPepper: () => void; onProfile: () => void }) {
+  const [dogUrl, setDogUrl] = useState<string | null>(null);
+  const [avatar, setAvatar] = useState<string | null>(null);
+  useEffect(() => { void signedUrl(session, "avatars", dog.photo_path).then(setDogUrl); void signedUrl(session, "avatars", profile.avatar_path).then(setAvatar); }, [dog.photo_path, profile.avatar_path, session]);
+  return <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-black/[.05] bg-[#fbf8f3]/95 px-4 py-3 backdrop-blur"><button onClick={onPepper} aria-label={`Open ${dog.name}'s profile`} className="relative size-11 overflow-hidden rounded-full bg-[#e8deee]">{dogUrl ? <Image src={dogUrl} alt={dog.name} fill sizes="44px" className="object-cover" /> : <span className="text-xl">🐾</span>}</button><button onClick={onPepper} className="min-w-0 flex-1 text-left"><Logo compact /><p className="truncate text-[11px] font-semibold text-[#887d8c]">{dog.name} the {dog.breed}</p></button><button aria-label="Notifications" className="grid size-10 place-items-center rounded-full bg-white"><BellIcon className="size-5" /></button><button onClick={onProfile} aria-label="Open your profile" className="relative size-9 overflow-hidden rounded-full bg-[#7450a8] text-xs font-bold text-white">{avatar ? <Image src={avatar} alt={profile.display_name} fill sizes="36px" className="object-cover" /> : profile.display_name.slice(0, 1).toUpperCase()}</button></header>;
+}
+
+function UserProfile({ session, profile, onChanged, onSignOut, setError }: { session: Session; profile: Profile; onChanged: () => void; onSignOut: () => void; setError: (s: string) => void }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => { void signedUrl(session, "avatars", profile.avatar_path).then(setUrl); }, [session, profile.avatar_path]);
+  async function replace(file?: File) { if (!file) return; try { const next = await upload(session, "avatars", file); await db(session, "profiles", `?id=eq.${session.user.id}`, { method: "PATCH", body: JSON.stringify({ avatar_path: next }) }); if (profile.avatar_path) await removeUpload(session, "avatars", profile.avatar_path); await onChanged(); } catch (reason) { setError(message(reason)); } }
+  async function remove() { if (!profile.avatar_path) return; try { await db(session, "profiles", `?id=eq.${session.user.id}`, { method: "PATCH", body: JSON.stringify({ avatar_path: null }) }); await removeUpload(session, "avatars", profile.avatar_path); await onChanged(); } catch (reason) { setError(message(reason)); } }
+  return <main className="px-5 py-6 sm:px-7"><p className="text-xs font-bold uppercase tracking-[.15em] text-[#8b62bd]">Your account</p><h1 className="mt-1 font-serif text-3xl font-bold">{profile.display_name}</h1><section className="mt-5 rounded-[28px] bg-white p-5 shadow-sm"><PhotoManager url={url} label={profile.display_name} onChange={replace} onDelete={remove} /><p className="mt-4 text-sm text-[#7d7281]">{session.user.email}</p></section><button onClick={onSignOut} className="secondary mt-7 text-red-600">Sign out</button></main>;
+}
+
+function PepperProfile({ session, dog, posts, onChanged, setError }: { session: Session; dog: Dog; posts: Post[]; onChanged: () => void; setError: (s: string) => void }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => { void signedUrl(session, "avatars", dog.photo_path).then(setUrl); }, [session, dog.photo_path]);
+  async function replace(file?: File) { if (!file) return; try { const next = await upload(session, "avatars", file); await db(session, "dogs", `?id=eq.${dog.id}`, { method: "PATCH", body: JSON.stringify({ photo_path: next }) }); if (dog.photo_path) await removeUpload(session, "avatars", dog.photo_path); await onChanged(); } catch (reason) { setError(message(reason)); } }
+  async function remove() { if (!dog.photo_path) return; try { await db(session, "dogs", `?id=eq.${dog.id}`, { method: "PATCH", body: JSON.stringify({ photo_path: null }) }); await removeUpload(session, "avatars", dog.photo_path); await onChanged(); } catch (reason) { setError(message(reason)); } }
+  return <main><div className="relative h-64 overflow-hidden bg-[#eee6f5]">{url ? <Image src={url} alt={dog.name} fill sizes="680px" className="object-cover" /> : <span className="grid h-full place-items-center text-8xl">🐾</span>}<div className="absolute inset-0 bg-gradient-to-t from-[#35243b]/70 via-transparent to-transparent" /><div className="absolute bottom-5 left-5 text-white"><p className="text-xs font-bold uppercase tracking-[.15em]">{dog.breed}</p><h1 className="font-serif text-4xl font-bold">{dog.name}</h1></div></div><section className="px-5 py-6 sm:px-7"><p className="text-sm font-bold">Born {new Date(`${dog.birthday}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</p>{dog.bio && <p className="mt-3 text-sm leading-6 text-[#766b7a]">{dog.bio}</p>}<PhotoManager compact url={url} label={`${dog.name}'s photo`} onChange={replace} onDelete={remove} /><div className="mt-6 grid grid-cols-2 gap-3"><Stat value={posts.length} label="Pupdates" /><Stat value={posts.reduce((n, post) => n + post.photos.length, 0)} label="Memories" /></div></section></main>;
+}
+
+export { Header as LegacyHeader, ProfilePage as LegacyProfilePage };
