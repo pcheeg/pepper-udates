@@ -148,9 +148,14 @@ function PostCard({ post, profile, session, onChanged, setError }: { post: Post;
   const [authorAvatar, setAuthorAvatar] = useState<string | null>(null);
   const [viewingPerson, setViewingPerson] = useState<FamilyPerson | null>(null);
   const [showLikers, setShowLikers] = useState(false);
-  useEffect(() => { void signedUrl(session, "avatars", post.poster_avatar_path ?? profile.avatar_path).then(setAuthorAvatar); }, [session, post.poster_avatar_path, profile.avatar_path]);
+  useEffect(() => {
+    setAuthorAvatar(null);
+    void signedUrl(session, "avatars", post.poster?.avatar_path ?? null)
+      .then(setAuthorAvatar)
+      .catch(() => setAuthorAvatar(null));
+  }, [session, post.poster?.avatar_path]);
   const liked = post.likes.some(like => like.user_id === session.user.id);
-  const author = post.poster_name || profile.display_name;
+  const author = post.poster?.display_name || post.poster_name || "Hooman";
   async function edit() { const caption = window.prompt("Edit caption", post.caption); if (caption === null) return; try { await db(session, "pupdates", `?id=eq.${post.id}`, { method: "PATCH", body: JSON.stringify({ caption, updated_at: new Date().toISOString() }) }); await onChanged(); } catch (reason) { setError(message(reason)); } }
   async function remove() { if (!window.confirm("Delete this Pupdate permanently?")) return; try { await Promise.all(post.photos.map(photo => removeUpload(session, "pupdates", photo.storage_path))); await db(session, "pupdates", `?id=eq.${post.id}`, { method: "DELETE" }); await onChanged(); } catch (reason) { setError(message(reason)); } }
   async function toggleLike() { try { if (liked) await db(session, "pupdate_likes", `?pupdate_id=eq.${post.id}&user_id=eq.${session.user.id}`, { method: "DELETE" }); else { setLikeAnimating(true); window.setTimeout(() => setLikeAnimating(false), 520); await db(session, "pupdate_likes", "", { method: "POST", body: JSON.stringify({ pupdate_id: post.id, user_id: session.user.id, liker_name: profile.display_name }) }); } await onChanged(); } catch (reason) { setError(message(reason)); } }
