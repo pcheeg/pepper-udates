@@ -7,7 +7,11 @@ export const metadata: Metadata = {
   description: "A private family feed and shared scrapbook for Pepper.",
   applicationName: "Pupdates",
   manifest: "/manifest.webmanifest",
-  icons: { icon: "/pupdate-icon.svg", apple: "/pupdate-icon.svg" },
+  icons: {
+    icon: [{ url: "/pepper-updates-icon.png", type: "image/png", sizes: "512x512" }],
+    apple: [{ url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" }],
+    shortcut: "/pepper-updates-icon.png",
+  },
   appleWebApp: { capable: true, statusBarStyle: "default", title: "Pupdates" },
 };
 

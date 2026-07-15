@@ -12,8 +12,8 @@ export default function manifest(): MetadataRoute.Manifest {
     theme_color: "#fbf8f3",
     orientation: "portrait-primary",
     icons: [
-      { src: "/pupdate-icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
-      { src: "/pupdate-icon.svg", sizes: "any", type: "image/svg+xml", purpose: "maskable" },
+      { src: "/pepper-updates-icon.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/pepper-updates-icon.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
     ],
   };
 }
