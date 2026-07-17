@@ -8,6 +8,10 @@ export type Session = {
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const sessionKey = "pupdate.supabase.session";
+const signedUrlStorageKey = "pupdate.supabase.signed-url-cache";
+const signedUrlTtlMs = 55 * 60 * 1000;
+const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
+const signedUrlRequests = new Map<string, Promise<string | null>>();
 
 export const supabaseConfigured = Boolean(url && key);
 
@@ -81,7 +85,7 @@ export async function updatePassword(session: Session, password: string) {
 }
 
 export async function signOut(session: Session) {
-  await request("/auth/v1/logout", { method: "POST" }, session).catch(() => undefined); saveSession(null);
+  await request("/auth/v1/logout", { method: "POST" }, session).catch(() => undefined); saveSession(null); clearSignedUrlCache();
 }
 
 export async function db<T>(session: Session, table: string, query = "", init: RequestInit = {}) {
@@ -93,7 +97,9 @@ export async function db<T>(session: Session, table: string, query = "", init: R
 
 export async function upload(session: Session, bucket: "avatars" | "pupdates", file: File) {
   if (!file.type.startsWith("image/")) throw new Error("Please choose an image file.");
-  const prepared = await prepareImage(file, bucket === "avatars" ? 4_500_000 : 9_000_000);
+  const prepared = bucket === "avatars"
+    ? await prepareImage(file, 900_000, 1200, [0.82, 0.74, 0.64, 0.54])
+    : await prepareImage(file, 1_200_000, 1280, [0.78, 0.68, 0.58, 0.48]);
   const extension = prepared.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
   const path = `${session.user.id}/${crypto.randomUUID()}.${extension}`;
   const response = await fetch(`${url}/storage/v1/object/${bucket}/${path}`, {
@@ -104,18 +110,18 @@ export async function upload(session: Session, bucket: "avatars" | "pupdates", f
   return path;
 }
 
-async function prepareImage(file: File, maxBytes: number) {
-  if (file.size <= maxBytes && file.type !== "image/heic" && file.type !== "image/heif") return file;
+async function prepareImage(file: File, maxBytes: number, maxDimension: number, qualitySteps: number[]) {
   let bitmap: ImageBitmap;
   try { bitmap = await createImageBitmap(file); } catch { throw new Error("This photo format cannot be processed. Please choose a JPG, PNG or WebP image."); }
   const longest = Math.max(bitmap.width, bitmap.height);
-  const scale = Math.min(1, 2048 / longest);
+  if (file.size <= maxBytes && longest <= maxDimension && file.type !== "image/heic" && file.type !== "image/heif") { bitmap.close(); return file; }
+  const scale = Math.min(1, maxDimension / longest);
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
   canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
-  for (const quality of [0.86, 0.76, 0.64, 0.52]) {
+  for (const quality of qualitySteps) {
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", quality));
     if (blob && blob.size <= maxBytes) return new File([blob], `${file.name.replace(/\.[^.]+$/, "")}.jpg`, { type: "image/jpeg" });
   }
@@ -126,8 +132,61 @@ export async function removeUpload(session: Session, bucket: "avatars" | "pupdat
   await request(`/storage/v1/object/${bucket}`, { method: "DELETE", body: JSON.stringify({ prefixes: [path] }) }, session);
 }
 
-export async function signedUrl(session: Session, bucket: "avatars" | "pupdates", path?: string | null) {
+async function signedUrl(session: Session, bucket: "avatars" | "pupdates", path?: string | null) {
   if (!path) return null;
   const result = await request<{ signedURL: string }>(`/storage/v1/object/sign/${bucket}/${path}`, { method: "POST", body: JSON.stringify({ expiresIn: 3600 }) }, session);
   return `${url}/storage/v1${result.signedURL}`;
+}
+
+export async function cachedSignedUrl(session: Session, bucket: "avatars" | "pupdates", path?: string | null) {
+  if (!path) return null;
+  const cacheKey = `${bucket}:${path}`;
+  const cached = signedUrlCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.url;
+  const stored = readStoredSignedUrl(cacheKey);
+  if (stored) {
+    signedUrlCache.set(cacheKey, stored);
+    return stored.url;
+  }
+  const pending = signedUrlRequests.get(cacheKey);
+  if (pending) return pending;
+  const requestPromise = signedUrl(session, bucket, path)
+    .then(next => {
+      if (next) {
+        const entry = { url: next, expiresAt: Date.now() + signedUrlTtlMs };
+        signedUrlCache.set(cacheKey, entry);
+        writeStoredSignedUrl(cacheKey, entry);
+      }
+      return next;
+    })
+    .finally(() => signedUrlRequests.delete(cacheKey));
+  signedUrlRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+}
+
+export function clearSignedUrlCache() {
+  signedUrlCache.clear();
+  signedUrlRequests.clear();
+  if (typeof window !== "undefined") localStorage.removeItem(signedUrlStorageKey);
+}
+
+function readStoredSignedUrl(cacheKey: string) {
+  if (typeof window === "undefined") return null;
+  try {
+    const values = JSON.parse(localStorage.getItem(signedUrlStorageKey) ?? "{}") as Record<string, { url: string; expiresAt: number }>;
+    const entry = values[cacheKey];
+    if (!entry || entry.expiresAt <= Date.now()) return null;
+    return entry;
+  } catch { return null; }
+}
+
+function writeStoredSignedUrl(cacheKey: string, entry: { url: string; expiresAt: number }) {
+  if (typeof window === "undefined") return;
+  try {
+    const now = Date.now();
+    const values = JSON.parse(localStorage.getItem(signedUrlStorageKey) ?? "{}") as Record<string, { url: string; expiresAt: number }>;
+    values[cacheKey] = entry;
+    for (const [key, value] of Object.entries(values)) if (!value?.url || value.expiresAt <= now) delete values[key];
+    localStorage.setItem(signedUrlStorageKey, JSON.stringify(values));
+  } catch { /* Best-effort cache only. */ }
 }
