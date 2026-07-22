@@ -8,10 +8,7 @@ export type Session = {
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 const sessionKey = "pupdate.supabase.session";
-const signedUrlStorageKey = "pupdate.supabase.signed-url-cache";
-const signedUrlTtlMs = 55 * 60 * 1000;
-const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
-const signedUrlRequests = new Map<string, Promise<string | null>>();
+const imageSessionCookie = "pupdate.image-session";
 
 export const supabaseConfigured = Boolean(url && key);
 
@@ -40,8 +37,15 @@ function normaliseSession(value: Session & { expires_in?: number }) {
 
 export function saveSession(value: Session | null) {
   if (typeof window === "undefined") return;
-  if (value) localStorage.setItem(sessionKey, JSON.stringify(value));
-  else localStorage.removeItem(sessionKey);
+  if (value) {
+    localStorage.setItem(sessionKey, JSON.stringify(value));
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `${imageSessionCookie}=${encodeURIComponent(JSON.stringify({ access_token: value.access_token }))}; Path=/; Max-Age=3600; SameSite=Lax${secure}`;
+  } else {
+    localStorage.removeItem(sessionKey);
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `${imageSessionCookie}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+  }
 }
 
 export function readSession(): Session | null {
@@ -59,6 +63,11 @@ export async function refreshSession(session: Session) {
 
 export async function ensureSession(session: Session) {
   return session.expires_at - Math.floor(Date.now() / 1000) < 90 ? refreshSession(session) : session;
+}
+
+export function storageImageUrl(bucket: "avatars" | "pupdates", path?: string | null) {
+  if (!path) return null;
+  return `/api/storage-image?bucket=${encodeURIComponent(bucket)}&path=${encodeURIComponent(path)}`;
 }
 
 export async function signUp(email: string, password: string, name: string) {
@@ -85,7 +94,7 @@ export async function updatePassword(session: Session, password: string) {
 }
 
 export async function signOut(session: Session) {
-  await request("/auth/v1/logout", { method: "POST" }, session).catch(() => undefined); saveSession(null); clearSignedUrlCache();
+  await request("/auth/v1/logout", { method: "POST" }, session).catch(() => undefined); saveSession(null);
 }
 
 export async function db<T>(session: Session, table: string, query = "", init: RequestInit = {}) {
@@ -130,63 +139,4 @@ async function prepareImage(file: File, maxBytes: number, maxDimension: number, 
 
 export async function removeUpload(session: Session, bucket: "avatars" | "pupdates", path: string) {
   await request(`/storage/v1/object/${bucket}`, { method: "DELETE", body: JSON.stringify({ prefixes: [path] }) }, session);
-}
-
-async function signedUrl(session: Session, bucket: "avatars" | "pupdates", path?: string | null) {
-  if (!path) return null;
-  const result = await request<{ signedURL: string }>(`/storage/v1/object/sign/${bucket}/${path}`, { method: "POST", body: JSON.stringify({ expiresIn: 3600 }) }, session);
-  return `${url}/storage/v1${result.signedURL}`;
-}
-
-export async function cachedSignedUrl(session: Session, bucket: "avatars" | "pupdates", path?: string | null) {
-  if (!path) return null;
-  const cacheKey = `${bucket}:${path}`;
-  const cached = signedUrlCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.url;
-  const stored = readStoredSignedUrl(cacheKey);
-  if (stored) {
-    signedUrlCache.set(cacheKey, stored);
-    return stored.url;
-  }
-  const pending = signedUrlRequests.get(cacheKey);
-  if (pending) return pending;
-  const requestPromise = signedUrl(session, bucket, path)
-    .then(next => {
-      if (next) {
-        const entry = { url: next, expiresAt: Date.now() + signedUrlTtlMs };
-        signedUrlCache.set(cacheKey, entry);
-        writeStoredSignedUrl(cacheKey, entry);
-      }
-      return next;
-    })
-    .finally(() => signedUrlRequests.delete(cacheKey));
-  signedUrlRequests.set(cacheKey, requestPromise);
-  return requestPromise;
-}
-
-export function clearSignedUrlCache() {
-  signedUrlCache.clear();
-  signedUrlRequests.clear();
-  if (typeof window !== "undefined") localStorage.removeItem(signedUrlStorageKey);
-}
-
-function readStoredSignedUrl(cacheKey: string) {
-  if (typeof window === "undefined") return null;
-  try {
-    const values = JSON.parse(localStorage.getItem(signedUrlStorageKey) ?? "{}") as Record<string, { url: string; expiresAt: number }>;
-    const entry = values[cacheKey];
-    if (!entry || entry.expiresAt <= Date.now()) return null;
-    return entry;
-  } catch { return null; }
-}
-
-function writeStoredSignedUrl(cacheKey: string, entry: { url: string; expiresAt: number }) {
-  if (typeof window === "undefined") return;
-  try {
-    const now = Date.now();
-    const values = JSON.parse(localStorage.getItem(signedUrlStorageKey) ?? "{}") as Record<string, { url: string; expiresAt: number }>;
-    values[cacheKey] = entry;
-    for (const [key, value] of Object.entries(values)) if (!value?.url || value.expiresAt <= now) delete values[key];
-    localStorage.setItem(signedUrlStorageKey, JSON.stringify(values));
-  } catch { /* Best-effort cache only. */ }
 }
