@@ -4,17 +4,18 @@
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { BellIcon, BookIcon, CameraIcon, ChevronIcon, HomeIcon, MoreIcon, PlusIcon, UserIcon } from "./icons";
-import { db, ensureSession, forgotPassword, logIn, readSession, removeUpload, saveSession, Session, storageImageUrl, signOut, signUp, supabaseConfigured, updatePassword, upload } from "@/lib/supabase";
+import { db, ensureSession, forgotPassword, logIn, readSession, removeUpload, saveSession, Session, storageImageUrl, signOut, signUp, supabaseConfigured, updatePassword, upload, uploadThumbnail } from "@/lib/supabase";
 
 type TagColor = "purple" | "red" | "orange" | "yellow" | "green" | "light-blue" | "indigo" | "violet" | "pink";
 type Profile = { id: string; display_name: string; avatar_path: string | null; bio: string | null; onboarding_complete: boolean; role: "admin" | "user"; member_tag: string; tag_color: TagColor };
 type FamilyPerson = Pick<Profile, "id" | "display_name" | "avatar_path" | "bio" | "role" | "member_tag" | "tag_color"> & { avatarUrl?: string | null };
 type Dog = { id: string; owner_id: string; name: string; breed: string; birthday: string; bio: string | null; photo_path: string | null; avatar_path: string | null };
-type Photo = { id: string; pupdate_id: string; storage_path: string; sort_order: number; url?: string };
+type Photo = { id: string; pupdate_id: string; storage_path: string; thumbnail_path: string | null; sort_order: number; url?: string; thumbnailUrl?: string };
 type Like = { id: string; pupdate_id: string; user_id: string; liker_name: string | null; created_at: string; person?: FamilyPerson };
 type Comment = { id: string; pupdate_id: string; user_id: string; author_name: string; body: string; created_at: string; person?: FamilyPerson };
 type Post = { id: string; owner_id: string; poster_name: string | null; poster?: FamilyPerson; poster_avatar_path?: string | null; poster_tag?: string; poster_tag_color?: TagColor; poster_role?: "admin" | "user"; client_submission_id: string | null; caption: string; location: string | null; event_date: string | null; tags: string[]; created_at: string; photos: Photo[]; likes: Like[]; comments: Comment[] };
 type CareEvent = { id: string; dog_id: string; event_type: "walk" | "feed"; occurred_at: string; created_at: string };
+type BackfillPhoto = Pick<Photo, "id" | "storage_path" | "thumbnail_path">;
 type Tab = "feed" | "add" | "scrapbook" | "profile" | "pepper";
 type AuthView = "welcome" | "signup" | "login" | "forgot" | "reset";
 const TAG_COLORS: { value: TagColor; label: string }[] = [{ value: "purple", label: "Purple" }, { value: "red", label: "Red" }, { value: "orange", label: "Orange" }, { value: "yellow", label: "Yellow" }, { value: "green", label: "Green" }, { value: "light-blue", label: "Light blue" }, { value: "indigo", label: "Indigo" }, { value: "violet", label: "Violet" }, { value: "pink", label: "Pink" }];
@@ -24,6 +25,24 @@ async function withAvatarUrls(_session: Session, people: FamilyPerson[]) {
   const paths = Array.from(new Set(people.map(person => person.avatar_path).filter((path): path is string => Boolean(path))));
   const urls = new Map(paths.map(path => [path, storageImageUrl("avatars", path)] as const));
   return people.map(person => ({ ...person, avatarUrl: person.avatar_path ? urls.get(person.avatar_path) ?? null : null }));
+}
+
+async function makeScrapbookThumbnail(sourceUrl: string, name: string) {
+  const response = await fetch(sourceUrl);
+  if (!response.ok) throw new Error("Could not load the original photo for thumbnailing.");
+  const blob = await response.blob();
+  let bitmap: ImageBitmap;
+  try { bitmap = await createImageBitmap(blob); } catch { throw new Error("This existing photo could not be processed into a thumbnail."); }
+  const longest = Math.max(bitmap.width, bitmap.height);
+  const scale = Math.min(1, 480 / longest);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const thumbnail = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/jpeg", 0.64));
+  if (!thumbnail) throw new Error("Could not create a thumbnail for this photo.");
+  return new File([thumbnail], `${name.replace(/\.[^.]+$/, "")}-thumb.jpg`, { type: "image/jpeg" });
 }
 
 export default function PupdateApp() {
@@ -57,7 +76,7 @@ export default function PupdateApp() {
       db<Like[]>(current, "pupdate_likes", `${related}&order=created_at.asc`).catch(() => []),
       db<Comment[]>(current, "pupdate_comments", `${related}&order=created_at.asc`).catch(() => []),
     ]);
-    const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined }));
+    const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined, thumbnailUrl: storageImageUrl("pupdates", photo.thumbnail_path) ?? undefined }));
     setProfile(ownProfile); setDog(dogs[0] ?? null);
     setPosts(updates.map(post => { const posterProfile = visibleProfiles.find(item => item.id === post.owner_id); return { ...post, poster: posterProfile, poster_avatar_path: posterProfile?.avatar_path ?? null, poster_tag: posterProfile?.member_tag ?? "HOOMAN", poster_tag_color: posterProfile?.tag_color ?? "purple", poster_role: posterProfile?.role ?? "user", photos: withUrls.filter(photo => photo.pupdate_id === post.id), likes: likes.filter(like => like.pupdate_id === post.id).map(like => ({ ...like, person: visibleProfiles.find(item => item.id === like.user_id) })), comments: comments.filter(comment => comment.pupdate_id === post.id).map(comment => ({ ...comment, person: visibleProfiles.find(item => item.id === comment.user_id) })) }; }));
     setHasMorePosts(fetchedUpdates.length > FEED_PAGE_SIZE);
@@ -114,7 +133,7 @@ export default function PupdateApp() {
         db<Like[]>(current, "pupdate_likes", `${related}&order=created_at.asc`).catch(() => []),
         db<Comment[]>(current, "pupdate_comments", `${related}&order=created_at.asc`).catch(() => []),
       ]);
-      const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined }));
+      const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined, thumbnailUrl: storageImageUrl("pupdates", photo.thumbnail_path) ?? undefined }));
       const page = updates.map(post => { const posterProfile = visibleProfiles.find(item => item.id === post.owner_id); return { ...post, poster: posterProfile, poster_avatar_path: posterProfile?.avatar_path ?? null, poster_tag: posterProfile?.member_tag ?? "HOOMAN", poster_tag_color: posterProfile?.tag_color ?? "purple", poster_role: posterProfile?.role ?? "user", photos: withUrls.filter(photo => photo.pupdate_id === post.id), likes: likes.filter(like => like.pupdate_id === post.id).map(like => ({ ...like, person: visibleProfiles.find(item => item.id === like.user_id) })), comments: comments.filter(comment => comment.pupdate_id === post.id).map(comment => ({ ...comment, person: visibleProfiles.find(item => item.id === comment.user_id) })) }; });
       setPosts(current => [...current, ...page.filter(next => !current.some(post => post.id === next.id || (next.client_submission_id && post.client_submission_id === next.client_submission_id)))]); setHasMorePosts(fetchedUpdates.length > FEED_PAGE_SIZE);
     } catch (reason) { setError(message(reason)); } finally { setLoadingMorePosts(false); }
@@ -188,7 +207,7 @@ function PostCard({ post, profile, session, onChanged, setError }: { post: Post;
   const author = post.poster?.display_name || post.poster_name || "Hooman";
   const authorAvatar = post.poster?.avatarUrl ?? null;
   async function edit() { const caption = window.prompt("Edit caption", post.caption); if (caption === null) return; try { await db(session, "pupdates", `?id=eq.${post.id}`, { method: "PATCH", body: JSON.stringify({ caption, updated_at: new Date().toISOString() }) }); await onChanged(); } catch (reason) { setError(message(reason)); } }
-  async function remove() { if (!window.confirm("Delete this Pupdate permanently?")) return; try { await Promise.all(post.photos.map(photo => removeUpload(session, "pupdates", photo.storage_path))); await db(session, "pupdates", `?id=eq.${post.id}`, { method: "DELETE" }); await onChanged(); } catch (reason) { setError(message(reason)); } }
+  async function remove() { if (!window.confirm("Delete this Pupdate permanently?")) return; try { await Promise.all(post.photos.flatMap(photo => [photo.storage_path, photo.thumbnail_path].filter((path): path is string => Boolean(path))).map(path => removeUpload(session, "pupdates", path).catch(() => undefined))); await db(session, "pupdates", `?id=eq.${post.id}`, { method: "DELETE" }); await onChanged(); } catch (reason) { setError(message(reason)); } }
   async function toggleLike() { try { if (liked) await db(session, "pupdate_likes", `?pupdate_id=eq.${post.id}&user_id=eq.${session.user.id}`, { method: "DELETE" }); else { setLikeAnimating(true); window.setTimeout(() => setLikeAnimating(false), 520); await db(session, "pupdate_likes", "", { method: "POST", body: JSON.stringify({ pupdate_id: post.id, user_id: session.user.id, liker_name: profile.display_name }) }); } await onChanged(); } catch (reason) { setError(message(reason)); } }
   async function addComment(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = event.currentTarget; const body = String(new FormData(form).get("comment")).trim(); if (!body) return; try { await db(session, "pupdate_comments", "", { method: "POST", body: JSON.stringify({ pupdate_id: post.id, user_id: session.user.id, author_name: profile.display_name, body }) }); form.reset(); await onChanged(); } catch (reason) { setError(message(reason)); } }
   async function removeComment(comment: Comment) { if (!window.confirm("Delete this comment permanently?")) return; try { await db(session, "pupdate_comments", `?id=eq.${comment.id}`, { method: "DELETE" }); await onChanged(); } catch (reason) { setError(message(reason)); } }
@@ -233,19 +252,23 @@ function AddPupdate({ session, profile, onCreated, setError }: { session: Sessio
     setBusy(true);
     setError("");
     const data = new FormData(e.currentTarget);
-    const uploaded: string[] = [];
+    const uploaded: { storage_path: string; thumbnail_path: string | null }[] = [];
     const clientSubmissionId = crypto.randomUUID();
     try {
-      for (const file of files) uploaded.push(await upload(session, "pupdates", file));
+      for (const file of files) {
+        const storage_path = await upload(session, "pupdates", file);
+        const thumbnail_path = await uploadThumbnail(session, "pupdates", file);
+        uploaded.push({ storage_path, thumbnail_path });
+      }
       const [post] = await db<Omit<Post, "photos" | "likes" | "comments">[]>(session, "pupdates", "?on_conflict=client_submission_id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ owner_id: session.user.id, poster_name: profile.display_name, client_submission_id: clientSubmissionId, caption: String(data.get("caption")), location: String(data.get("location")) || null, event_date: String(data.get("eventDate")) || null, tags: data.getAll("tags") }) });
-      const photos = await db<Photo[]>(session, "pupdate_photos", "?on_conflict=pupdate_id,sort_order", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify(uploaded.map((storage_path, sort_order) => ({ owner_id: session.user.id, pupdate_id: post.id, storage_path, sort_order }))) });
-      const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined }));
+      const photos = await db<Photo[]>(session, "pupdate_photos", "?on_conflict=pupdate_id,sort_order", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify(uploaded.map((paths, sort_order) => ({ owner_id: session.user.id, pupdate_id: post.id, ...paths, sort_order }))) });
+      const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined, thumbnailUrl: storageImageUrl("pupdates", photo.thumbnail_path) ?? undefined }));
       const poster = profile.avatar_path ? { ...profile, avatarUrl: storageImageUrl("avatars", profile.avatar_path) } : profile;
       onCreated({ ...post, poster, poster_avatar_path: profile.avatar_path, poster_tag: profile.member_tag ?? "HOOMAN", poster_tag_color: profile.tag_color ?? "purple", poster_role: profile.role, photos: withUrls, likes: [], comments: [] });
       setFiles([]);
       setIndex(0);
     } catch (reason) {
-      await Promise.all(uploaded.map(path => removeUpload(session, "pupdates", path).catch(() => undefined)));
+      await Promise.all(uploaded.flatMap(photo => [photo.storage_path, photo.thumbnail_path].filter((path): path is string => Boolean(path))).map(path => removeUpload(session, "pupdates", path).catch(() => undefined)));
       setError(message(reason));
     } finally { submittingRef.current = false; setBusy(false); }
   }
@@ -289,7 +312,7 @@ function Scrapbook({ posts, dog, profile, session, onChanged, setError }: { post
         {posters.map(name => <button key={name} onClick={() => { setPoster(name); setTag(null); }} className="shrink-0 px-1 text-center"><span className={`relative mx-auto grid size-11 overflow-hidden rounded-full text-sm font-bold ${poster === name ? "bg-[#7450a8] text-white ring-2 ring-[#c8afe1] ring-offset-2" : "bg-[#eee6f5] text-[#7450a8]"}`}>{name === profile.display_name && profileUrl ? <Image src={profileUrl} alt={name} fill sizes="44px" className="object-cover" /> : name.slice(0, 1).toUpperCase()}</span><span className="mt-1.5 block max-w-16 truncate text-[10px] font-bold">{name}</span></button>)}
       </div>}
     </div>
-    {monthKeys.length ? <div className="mt-7 space-y-8">{monthKeys.map(key => { const date = new Date(`${key}-01T00:00:00`); return <section key={key} className="border-t border-[#ded4e2] pt-5 first:border-0 first:pt-0"><div className="mb-3 flex items-end justify-between"><h2 className="font-serif text-2xl font-bold">{date.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</h2><span className="text-[11px] font-bold text-[#8b7e90]">{months[key].length} {months[key].length === 1 ? "Pupdate" : "Pupdates"}</span></div><div className="grid grid-cols-3 gap-1.5">{months[key].flatMap(post => post.photos.map(photo => <button key={photo.id} onClick={() => setOpenPostId(post.id)} aria-label={`Open Pupdate by ${post.poster_name || profile.display_name}`} className="relative aspect-square overflow-hidden rounded-xl bg-[#e8e1e9]">{photo.url && <Image src={photo.url} alt={post.caption || "Scrapbook memory"} fill sizes="(max-width: 680px) 33vw, 180px" quality={55} loading="lazy" decoding="async" className="object-cover" />}</button>))}</div></section>; })}</div> : <EmptySmall text={posts.length ? "No Pupdates match those filters." : "Photos will appear here after your first Pupdate."} />}
+    {monthKeys.length ? <div className="mt-7 space-y-8">{monthKeys.map(key => { const date = new Date(`${key}-01T00:00:00`); return <section key={key} className="border-t border-[#ded4e2] pt-5 first:border-0 first:pt-0"><div className="mb-3 flex items-end justify-between"><h2 className="font-serif text-2xl font-bold">{date.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}</h2><span className="text-[11px] font-bold text-[#8b7e90]">{months[key].length} {months[key].length === 1 ? "Pupdate" : "Pupdates"}</span></div><div className="grid grid-cols-3 gap-1.5">{months[key].flatMap(post => post.photos.map(photo => <button key={photo.id} onClick={() => setOpenPostId(post.id)} aria-label={`Open Pupdate by ${post.poster_name || profile.display_name}`} className="relative aspect-square overflow-hidden rounded-xl bg-[#e8e1e9]">{(photo.thumbnailUrl || photo.url) && <Image src={(photo.thumbnailUrl || photo.url)!} alt={post.caption || "Scrapbook memory"} fill sizes="(max-width: 680px) 33vw, 180px" quality={55} loading="lazy" decoding="async" className="object-cover" />}</button>))}</div></section>; })}</div> : <EmptySmall text={posts.length ? "No Pupdates match those filters." : "Photos will appear here after your first Pupdate."} />}
     {openPostId && posts.find(post => post.id === openPostId) && <div role="dialog" aria-modal="true" aria-label="Full Pupdate" className="fixed inset-0 z-50 overflow-y-auto bg-[#302a33]/70 px-3 py-5 backdrop-blur-sm"><div className="mx-auto max-w-[640px]"><div className="sticky top-0 z-10 mb-3 flex justify-end"><button onClick={() => setOpenPostId(null)} aria-label="Close Pupdate" className="grid size-11 place-items-center rounded-full bg-white text-2xl shadow-lg">×</button></div><PostCard post={posts.find(post => post.id === openPostId)!} profile={profile} session={session} onChanged={onChanged} setError={setError} /></div></div>}
   </main>;
 }
@@ -364,13 +387,48 @@ type ModerationProfile = Pick<Profile, "id" | "display_name" | "role" | "avatar_
 
 function AdminModeration({ session, currentUserId, onChanged, setError }: { session: Session; currentUserId: string; onChanged: () => void; setError: (s: string) => void }) {
   const [members, setMembers] = useState<ModerationProfile[]>([]);
+  const [thumbnailBusy, setThumbnailBusy] = useState(false);
+  const [thumbnailStatus, setThumbnailStatus] = useState("");
   const load = useCallback(async () => {
     setMembers(await db<ModerationProfile[]>(session, "profiles", "?select=id,display_name,role,avatar_path,member_tag,tag_color&order=created_at.asc"));
   }, [session]);
   useEffect(() => { queueMicrotask(() => { void load().catch(reason => setError(message(reason))); }); }, [load, setError]);
-  async function removeAccount(member: ModerationProfile) { if (!window.confirm(`Remove ${member.display_name} from the family? Their account and all associated data will be permanently deleted.`)) return; try { const [dogs, photos] = await Promise.all([db<Pick<Dog, "photo_path" | "avatar_path">[]>(session, "dogs", `?owner_id=eq.${member.id}&select=photo_path,avatar_path`), db<Pick<Photo, "storage_path">[]>(session, "pupdate_photos", `?owner_id=eq.${member.id}&select=storage_path`)]); const avatarPaths = [member.avatar_path, ...dogs.flatMap(dog => [dog.photo_path, dog.avatar_path])].filter((path): path is string => Boolean(path)); await Promise.all([...avatarPaths.map(path => removeUpload(session, "avatars", path)), ...photos.map(photo => removeUpload(session, "pupdates", photo.storage_path))]); await db(session, "rpc/admin_delete_account", "", { method: "POST", body: JSON.stringify({ target_user_id: member.id }) }); await load(); await onChanged(); } catch (reason) { setError(message(reason)); } }
+  async function removeAccount(member: ModerationProfile) { if (!window.confirm(`Remove ${member.display_name} from the family? Their account and all associated data will be permanently deleted.`)) return; try { const [dogs, photos] = await Promise.all([db<Pick<Dog, "photo_path" | "avatar_path">[]>(session, "dogs", `?owner_id=eq.${member.id}&select=photo_path,avatar_path`), db<Pick<Photo, "storage_path" | "thumbnail_path">[]>(session, "pupdate_photos", `?owner_id=eq.${member.id}&select=storage_path,thumbnail_path`)]); const avatarPaths = [member.avatar_path, ...dogs.flatMap(dog => [dog.photo_path, dog.avatar_path])].filter((path): path is string => Boolean(path)); const pupdatePaths = photos.flatMap(photo => [photo.storage_path, photo.thumbnail_path].filter((path): path is string => Boolean(path))); await Promise.all([...avatarPaths.map(path => removeUpload(session, "avatars", path)), ...pupdatePaths.map(path => removeUpload(session, "pupdates", path))]); await db(session, "rpc/admin_delete_account", "", { method: "POST", body: JSON.stringify({ target_user_id: member.id }) }); await load(); await onChanged(); } catch (reason) { setError(message(reason)); } }
   async function saveTag(event: FormEvent<HTMLFormElement>, member: ModerationProfile) { event.preventDefault(); const data = new FormData(event.currentTarget); try { await db(session, "profiles", `?id=eq.${member.id}`, { method: "PATCH", body: JSON.stringify({ member_tag: String(data.get("memberTag")).trim().toUpperCase(), tag_color: String(data.get("tagColor")) }) }); await load(); await onChanged(); } catch (reason) { setError(message(reason)); } }
-  return <section className="mt-7"><p className="text-xs font-bold uppercase tracking-[.15em] text-[#8b62bd]">Family management</p><details className="mt-3 rounded-[22px] bg-white p-4 shadow-sm"><summary className="cursor-pointer text-sm font-bold">People <span className="text-[#8a7f8d]">({members.length})</span></summary><div className="mt-3 space-y-3">{members.map(member => <div key={member.id} className="rounded-2xl bg-[#f7f3ef] p-3"><div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-full bg-[#eee6f5] text-xs font-bold text-[#7450a8]">{member.display_name.slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1 truncate text-sm font-bold">{member.display_name}</span><TagBadge label={member.role === "admin" ? "CHIEF HOOMAN" : member.member_tag || "HOOMAN"} color={member.tag_color || "purple"} compact />{member.id === currentUserId ? <span className="text-[10px] font-bold uppercase text-[#8b62bd]">You</span> : <button onClick={() => removeAccount(member)} className="rounded-full bg-red-50 px-3 py-2 text-[11px] font-bold text-red-600">Remove</button>}</div>{member.id !== currentUserId && <form onSubmit={event => saveTag(event, member)} className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2"><input name="memberTag" defaultValue={member.member_tag || "HOOMAN"} maxLength={24} aria-label={`Tag for ${member.display_name}`} className="min-w-0 rounded-xl bg-white px-3 py-2 text-xs font-bold uppercase" required /><select name="tagColor" defaultValue={member.tag_color || "purple"} aria-label={`Tag colour for ${member.display_name}`} className="min-w-0 rounded-xl bg-white px-2 py-2 text-xs">{TAG_COLORS.map(color => <option key={color.value} value={color.value}>{color.label}</option>)}</select><button className="rounded-xl bg-[#7450a8] px-3 text-xs font-bold text-white">Save</button></form>}</div>)}</div></details></section>;
+  async function backfillThumbnails() {
+    if (thumbnailBusy) return;
+    setThumbnailBusy(true);
+    setThumbnailStatus("Finding photos without thumbnails…");
+    try {
+      const missing = await db<BackfillPhoto[]>(session, "pupdate_photos", "?select=id,storage_path,thumbnail_path&thumbnail_path=is.null&order=created_at.asc&limit=10");
+      if (!missing.length) { setThumbnailStatus("All loaded photos already have thumbnails."); return; }
+      let completed = 0;
+      for (const photo of missing) {
+        setThumbnailStatus(`Creating thumbnail ${completed + 1} of ${missing.length}…`);
+        const sourceUrl = storageImageUrl("pupdates", photo.storage_path);
+        if (!sourceUrl) throw new Error("Could not open one of the original photos.");
+        const sourceName = photo.storage_path.split("/").pop() || "pupdate.jpg";
+        const thumbnailFile = await makeScrapbookThumbnail(sourceUrl, sourceName);
+        const thumbnail_path = await uploadThumbnail(session, "pupdates", thumbnailFile);
+        try {
+          await db(session, "pupdate_photos", `?id=eq.${photo.id}`, { method: "PATCH", body: JSON.stringify({ thumbnail_path }) });
+        } catch (reason) {
+          await removeUpload(session, "pupdates", thumbnail_path).catch(() => undefined);
+          throw reason;
+        }
+        completed += 1;
+      }
+      setThumbnailStatus(`Created ${completed} thumbnail${completed === 1 ? "" : "s"}. Run again later for the next batch.`);
+      await onChanged();
+    } catch (reason) {
+      const text = message(reason);
+      setThumbnailStatus(text);
+      setError(text);
+    } finally {
+      setThumbnailBusy(false);
+    }
+  }
+  return <section className="mt-7"><p className="text-xs font-bold uppercase tracking-[.15em] text-[#8b62bd]">Family management</p><details className="mt-3 rounded-[22px] bg-white p-4 shadow-sm"><summary className="cursor-pointer text-sm font-bold">People <span className="text-[#8a7f8d]">({members.length})</span></summary><div className="mt-3 space-y-3">{members.map(member => <div key={member.id} className="rounded-2xl bg-[#f7f3ef] p-3"><div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-full bg-[#eee6f5] text-xs font-bold text-[#7450a8]">{member.display_name.slice(0, 1).toUpperCase()}</span><span className="min-w-0 flex-1 truncate text-sm font-bold">{member.display_name}</span><TagBadge label={member.role === "admin" ? "CHIEF HOOMAN" : member.member_tag || "HOOMAN"} color={member.tag_color || "purple"} compact />{member.id === currentUserId ? <span className="text-[10px] font-bold uppercase text-[#8b62bd]">You</span> : <button onClick={() => removeAccount(member)} className="rounded-full bg-red-50 px-3 py-2 text-[11px] font-bold text-red-600">Remove</button>}</div>{member.id !== currentUserId && <form onSubmit={event => saveTag(event, member)} className="mt-3 grid grid-cols-[1fr_1fr_auto] gap-2"><input name="memberTag" defaultValue={member.member_tag || "HOOMAN"} maxLength={24} aria-label={`Tag for ${member.display_name}`} className="min-w-0 rounded-xl bg-white px-3 py-2 text-xs font-bold uppercase" required /><select name="tagColor" defaultValue={member.tag_color || "purple"} aria-label={`Tag colour for ${member.display_name}`} className="min-w-0 rounded-xl bg-white px-2 py-2 text-xs">{TAG_COLORS.map(color => <option key={color.value} value={color.value}>{color.label}</option>)}</select><button className="rounded-xl bg-[#7450a8] px-3 text-xs font-bold text-white">Save</button></form>}</div>)}</div><div className="mt-4 rounded-2xl bg-[#f7f3ef] p-3"><p className="text-sm font-bold">Scrapbook thumbnails</p><p className="mt-1 text-xs leading-5 text-[#8a7f8d]">Create small grid images for older Pupdates in safe batches of 10. This keeps the Scrapbook from loading full-size originals.</p><button type="button" onClick={backfillThumbnails} disabled={thumbnailBusy} className="mt-3 rounded-full bg-[#7450a8] px-4 py-2 text-xs font-bold text-white disabled:opacity-60">{thumbnailBusy ? "Working…" : "Generate 10 missing thumbnails"}</button>{thumbnailStatus && <p className="mt-2 text-xs text-[#6f6174]">{thumbnailStatus}</p>}</div></details></section>;
 }
 
 function PepperProfile({ session, dog, posts, careEvents, onChanged, setError }: { session: Session; dog: Dog; posts: Post[]; careEvents: CareEvent[]; onChanged: () => void; setError: (s: string) => void }) {

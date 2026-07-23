@@ -109,8 +109,18 @@ export async function upload(session: Session, bucket: "avatars" | "pupdates", f
   const prepared = bucket === "avatars"
     ? await prepareImage(file, 900_000, 1200, [0.82, 0.74, 0.64, 0.54])
     : await prepareImage(file, 1_200_000, 1280, [0.78, 0.68, 0.58, 0.48]);
+  return uploadPreparedImage(session, bucket, prepared);
+}
+
+export async function uploadThumbnail(session: Session, bucket: "avatars" | "pupdates", file: File) {
+  if (!file.type.startsWith("image/")) throw new Error("Please choose an image file.");
+  const prepared = await prepareImage(file, 90_000, 480, [0.72, 0.62, 0.52, 0.42]);
+  return uploadPreparedImage(session, bucket, prepared, "thumbnails");
+}
+
+async function uploadPreparedImage(session: Session, bucket: "avatars" | "pupdates", prepared: File, folder?: string) {
   const extension = prepared.name.split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
-  const path = `${session.user.id}/${crypto.randomUUID()}.${extension}`;
+  const path = `${session.user.id}/${folder ? `${folder}/` : ""}${crypto.randomUUID()}.${extension}`;
   const response = await fetch(`${url}/storage/v1/object/${bucket}/${path}`, {
     method: "POST", body: prepared,
     headers: { apikey: key, Authorization: `Bearer ${session.access_token}`, "Content-Type": prepared.type, "x-upsert": "false" },
