@@ -11,10 +11,9 @@ export async function POST(request: Request) {
     }
     const name = await displayName(user.id);
     if (!name) return Response.json({ error: "Profile not found." }, { status: 404 });
-    await sendToOtherUsers(user.id, `${name} requests a Pupdate!`);
+    await sendToOtherUsers(user.id, `${name} requests a Pupdate! 🐶🙏`);
     return Response.json({ ok: true, nextAllowedAt: result.next_allowed_at });
   } catch (reason) {
     return Response.json({ error: reason instanceof Error ? reason.message : "Could not request a Pupdate." }, { status: 500 });
   }
 }
-

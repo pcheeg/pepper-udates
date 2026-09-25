@@ -11,10 +11,9 @@ export async function POST(request: Request) {
     if (claim === "duplicate") return Response.json({ ok: true, duplicate: true });
     const name = await displayName(user.id);
     if (!name) return Response.json({ error: "Profile not found." }, { status: 404 });
-    await sendToOtherUsers(user.id, `${name} has just posted a Pupdate!`, `/?pupdate=${encodeURIComponent(pupdateId)}`);
+    await sendToOtherUsers(user.id, `${name} has just posted a Pupdate! 🐶🚨`, `/?pupdate=${encodeURIComponent(pupdateId)}`);
     return Response.json({ ok: true });
   } catch (reason) {
     return Response.json({ error: reason instanceof Error ? reason.message : "Could not send Pupdate notifications." }, { status: 500 });
   }
 }
-
