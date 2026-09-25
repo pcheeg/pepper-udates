@@ -34,3 +34,14 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Push notification setup
+
+1. Apply `supabase/migrations/202609250001_push_notifications.sql` to the connected Supabase project.
+2. Generate a VAPID key pair with `npx web-push generate-vapid-keys --json`.
+3. Add these variables locally and in Vercel:
+   - `SUPABASE_SERVICE_ROLE_KEY` (Supabase project settings; server only)
+   - `NEXT_PUBLIC_VAPID_PUBLIC_KEY`
+   - `VAPID_PRIVATE_KEY` (server only)
+   - `VAPID_SUBJECT` (for example `mailto:owner@example.com`)
+4. Redeploy after adding the variables. Push requires HTTPS in production; localhost is also supported for development.

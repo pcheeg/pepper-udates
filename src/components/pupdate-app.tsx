@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { BellIcon, BookIcon, CameraIcon, ChevronIcon, HomeIcon, MoreIcon, PlusIcon, UserIcon } from "./icons";
 import { db, ensureSession, forgotPassword, logIn, readSession, removeUpload, saveSession, Session, storageImageUrl, signOut, signUp, supabaseConfigured, updatePassword, upload, uploadThumbnail } from "@/lib/supabase";
+import { announceNewPupdate, detachPushSubscription, requestAPupdate, subscribeToPush } from "@/lib/push";
 
 type TagColor = "purple" | "red" | "orange" | "yellow" | "green" | "light-blue" | "indigo" | "violet" | "pink";
 type Profile = { id: string; display_name: string; avatar_path: string | null; bio: string | null; onboarding_complete: boolean; role: "admin" | "user"; member_tag: string; tag_color: TagColor };
@@ -114,6 +115,17 @@ export default function PupdateApp() {
     return () => window.clearInterval(timer);
   }, [session]);
 
+  useEffect(() => {
+    if (!session || !profile || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    void subscribeToPush(session).catch(() => undefined);
+  }, [session, profile]);
+
+  useEffect(() => {
+    const pupdateId = new URLSearchParams(window.location.search).get("pupdate");
+    if (!pupdateId || !posts.some(post => post.id === pupdateId)) return;
+    window.setTimeout(() => document.getElementById(`pupdate-${pupdateId}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+  }, [posts]);
+
   async function authenticated(next: Session) { setLoading(true); setError(""); try { await hydrate(next); } catch (reason) { setError(message(reason)); } finally { setLoading(false); } }
   async function reload() { if (session) await hydrate(session); }
   function mergePost(next: Post) { setPosts(current => [next, ...current.filter(post => post.id !== next.id && (!next.client_submission_id || post.client_submission_id !== next.client_submission_id))].sort((a, b) => b.created_at.localeCompare(a.created_at))); }
@@ -139,7 +151,7 @@ export default function PupdateApp() {
     } catch (reason) { setError(message(reason)); } finally { setLoadingMorePosts(false); }
   }
   function openPupdate(postId: string) { setTab("feed"); window.setTimeout(() => document.getElementById(`pupdate-${postId}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }
-  async function logout() { if (!session) return; await signOut(session); setSession(null); setProfile(null); setDog(null); setPosts([]); setTab("feed"); setAuthView("welcome"); }
+  async function logout() { if (!session) return; await detachPushSubscription(session).catch(() => undefined); await signOut(session); setSession(null); setProfile(null); setDog(null); setPosts([]); setTab("feed"); setAuthView("welcome"); }
 
   if (loading) return <Loading />;
   if (!supabaseConfigured) return <SetupRequired />;
@@ -148,7 +160,7 @@ export default function PupdateApp() {
   if (!profile?.onboarding_complete || !dog) return <Onboarding session={session} initialName={String(session.user.user_metadata?.display_name ?? "")} onDone={reload} />;
 
   return <div className="mx-auto min-h-screen max-w-[680px] bg-[#fbf8f3] pb-24 text-[#312b34] shadow-[0_0_70px_rgba(50,35,60,0.08)]">
-    <AppHeader dog={dog} profile={profile} posts={posts} session={session} onPepper={() => setTab("pepper")} onProfile={() => setTab("profile")} onPupdate={openPupdate} />
+    <AppHeader dog={dog} profile={profile} posts={posts} session={session} onPepper={() => setTab("pepper")} onProfile={() => setTab("profile")} onPupdate={openPupdate} setError={setError} />
     {error && <Notice text={error} onClose={() => setError("")} />}
     {tab === "feed" && <Feed posts={posts} dog={dog} profile={profile} onCreate={() => setTab("add")} onChanged={reload} onLoadMore={loadMorePosts} hasMore={hasMorePosts} loadingMore={loadingMorePosts} session={session} setError={setError} />}
     {tab === "add" && <AddPupdate session={session} profile={profile} onCreated={post => { mergePost(post); setTab("feed"); }} setError={setError} />}
@@ -264,6 +276,7 @@ function AddPupdate({ session, profile, onCreated, setError }: { session: Sessio
       const photos = await db<Photo[]>(session, "pupdate_photos", "?on_conflict=pupdate_id,sort_order", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify(uploaded.map((paths, sort_order) => ({ owner_id: session.user.id, pupdate_id: post.id, ...paths, sort_order }))) });
       const withUrls = photos.map(photo => ({ ...photo, url: storageImageUrl("pupdates", photo.storage_path) ?? undefined, thumbnailUrl: storageImageUrl("pupdates", photo.thumbnail_path) ?? undefined }));
       const poster = profile.avatar_path ? { ...profile, avatarUrl: storageImageUrl("avatars", profile.avatar_path) } : profile;
+      await announceNewPupdate(session, post.id).catch(reason => setError(`Your Pupdate was posted, but notifications could not be sent: ${message(reason)}`));
       onCreated({ ...post, poster, poster_avatar_path: profile.avatar_path, poster_tag: profile.member_tag ?? "HOOMAN", poster_tag_color: profile.tag_color ?? "purple", poster_role: profile.role, photos: withUrls, likes: [], comments: [] });
       setFiles([]);
       setIndex(0);
@@ -354,23 +367,30 @@ function SetupRequired() { return <main className="grid min-h-screen place-items
 function formatDate(value: string) { return new Date(value).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }); }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : "Something went wrong. Please try again."; }
 
-function NotificationBell({ posts, profile, onPupdate }: { posts: Post[]; profile: Profile; onPupdate: (postId: string) => void }) {
+function NotificationBell({ posts, profile, session, onPupdate, setError }: { posts: Post[]; profile: Profile; session: Session; onPupdate: (postId: string) => void; setError: (value: string) => void }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushEnabled, setPushEnabled] = useState(false);
+  const [nextRequestAt, setNextRequestAt] = useState<string | null>(null);
   const activities = useMemo(() => posts.filter(post => post.owner_id === profile.id).flatMap(post => [
     ...post.likes.filter(like => like.user_id !== profile.id).map(like => ({ id: `like-${like.id}`, postId: post.id, date: like.created_at, text: `${like.person?.display_name || like.liker_name || "Someone"} liked your Pupdate` })),
     ...post.comments.filter(comment => comment.user_id !== profile.id).map(comment => ({ id: `comment-${comment.id}`, postId: post.id, date: comment.created_at, text: `${comment.author_name} commented: “${comment.body}”` })),
   ]).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5), [posts, profile.id]);
   const seenKey = `pupdate.notifications.seen.${profile.id}`;
   useEffect(() => { queueMicrotask(() => { const latest = activities[0]?.date; setUnread(Boolean(latest && latest > (localStorage.getItem(seenKey) ?? ""))); }); }, [activities, seenKey]);
+  useEffect(() => { if (typeof Notification !== "undefined") queueMicrotask(() => setPushEnabled(Notification.permission === "granted")); }, []);
   function toggle() { const next = !open; setOpen(next); if (next) { const latest = activities[0]?.date ?? new Date().toISOString(); localStorage.setItem(seenKey, latest); setUnread(false); } }
-  return <div className="relative"><button onClick={toggle} aria-label="Notifications" aria-expanded={open} className="relative grid size-10 place-items-center rounded-full bg-white"><BellIcon className="size-5" />{unread && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-[#7450a8] ring-2 ring-white" />}</button>{open && <section className="absolute right-0 top-12 z-40 w-[min(21rem,calc(100vw-2rem))] rounded-[22px] bg-white p-4 shadow-2xl"><h2 className="font-serif text-xl font-bold">Notifications</h2>{activities.length ? <div className="mt-3 space-y-2">{activities.map(activity => <button type="button" key={activity.id} onClick={() => { setOpen(false); onPupdate(activity.postId); }} className="block w-full rounded-2xl bg-[#f7f3ef] p-3 text-left transition hover:bg-[#f0e9e3]"><p className="text-sm leading-5">{activity.text}</p><p className="mt-1 text-[10px] text-[#8b7f8e]">{formatDate(activity.date)}</p></button>)}</div> : <p className="mt-3 rounded-2xl bg-[#f7f3ef] p-4 text-sm text-[#7d7281]">No new activity yet.</p>}</section>}</div>;
+  async function enablePush() { setPushBusy(true); try { await subscribeToPush(session, true); setPushEnabled(true); } catch (reason) { setError(message(reason)); } finally { setPushBusy(false); } }
+  async function requestUpdate() { setPushBusy(true); try { const result = await requestAPupdate(session); setNextRequestAt(result.nextAllowedAt); setOpen(false); } catch (reason) { const next = reason instanceof Error && "nextAllowedAt" in reason ? String(reason.nextAllowedAt || "") : ""; if (next) setNextRequestAt(next); setError(message(reason)); } finally { setPushBusy(false); } }
+  const coolingDown = Boolean(nextRequestAt);
+  return <div className="relative"><button onClick={toggle} aria-label="Notifications" aria-expanded={open} className="relative grid size-10 place-items-center rounded-full bg-white"><BellIcon className="size-5" />{unread && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-[#7450a8] ring-2 ring-white" />}</button>{open && <section className="absolute right-0 top-12 z-40 w-[min(21rem,calc(100vw-2rem))] rounded-[22px] bg-white p-4 shadow-2xl"><h2 className="font-serif text-xl font-bold">Notifications</h2>{!pushEnabled && <button type="button" onClick={enablePush} disabled={pushBusy} className="primary mt-3">{pushBusy ? "Enabling…" : "Enable push notifications"}</button>}<button type="button" onClick={requestUpdate} disabled={pushBusy || coolingDown} className="secondary mt-3">{coolingDown ? `Request again ${new Date(nextRequestAt!).toLocaleString("en-GB", { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : pushBusy ? "Requesting…" : "Request a Pupdate"}</button>{activities.length ? <div className="mt-3 space-y-2">{activities.map(activity => <button type="button" key={activity.id} onClick={() => { setOpen(false); onPupdate(activity.postId); }} className="block w-full rounded-2xl bg-[#f7f3ef] p-3 text-left transition hover:bg-[#f0e9e3]"><p className="text-sm leading-5">{activity.text}</p><p className="mt-1 text-[10px] text-[#8b7f8e]">{formatDate(activity.date)}</p></button>)}</div> : <p className="mt-3 rounded-2xl bg-[#f7f3ef] p-4 text-sm text-[#7d7281]">No new activity yet.</p>}</section>}</div>;
 }
 
-function AppHeader({ dog, profile, posts, onPepper, onProfile, onPupdate }: { dog: Dog; profile: Profile; posts: Post[]; session: Session; onPepper: () => void; onProfile: () => void; onPupdate: (postId: string) => void }) {
+function AppHeader({ dog, profile, posts, session, onPepper, onProfile, onPupdate, setError }: { dog: Dog; profile: Profile; posts: Post[]; session: Session; onPepper: () => void; onProfile: () => void; onPupdate: (postId: string) => void; setError: (value: string) => void }) {
   const dogUrl = storageImageUrl("avatars", dog.avatar_path ?? dog.photo_path);
   const avatar = storageImageUrl("avatars", profile.avatar_path);
-  return <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-black/[.05] bg-[#fbf8f3]/95 px-4 py-3 backdrop-blur"><button onClick={onPepper} aria-label={`Open ${dog.name}'s profile`} className="relative size-11 overflow-hidden rounded-full bg-[#e8deee]">{dogUrl ? <Image src={dogUrl} alt={dog.name} fill sizes="44px" className="object-cover" /> : <span className="text-xl">🐾</span>}</button><button onClick={onPepper} className="min-w-0 flex-1 text-left"><Logo compact /><p className="truncate text-[11px] font-semibold text-[#887d8c]">{dog.name} the {dog.breed}</p></button><NotificationBell posts={posts} profile={profile} onPupdate={onPupdate} /><button onClick={onProfile} aria-label="Open your profile" className="relative size-9 overflow-hidden rounded-full bg-[#7450a8] text-xs font-bold text-white">{avatar ? <Image src={avatar} alt={profile.display_name} fill sizes="36px" className="object-cover" /> : profile.display_name.slice(0, 1).toUpperCase()}</button></header>;
+  return <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-black/[.05] bg-[#fbf8f3]/95 px-4 py-3 backdrop-blur"><button onClick={onPepper} aria-label={`Open ${dog.name}'s profile`} className="relative size-11 overflow-hidden rounded-full bg-[#e8deee]">{dogUrl ? <Image src={dogUrl} alt={dog.name} fill sizes="44px" className="object-cover" /> : <span className="text-xl">🐾</span>}</button><button onClick={onPepper} className="min-w-0 flex-1 text-left"><Logo compact /><p className="truncate text-[11px] font-semibold text-[#887d8c]">{dog.name} the {dog.breed}</p></button><NotificationBell posts={posts} profile={profile} session={session} onPupdate={onPupdate} setError={setError} /><button onClick={onProfile} aria-label="Open your profile" className="relative size-9 overflow-hidden rounded-full bg-[#7450a8] text-xs font-bold text-white">{avatar ? <Image src={avatar} alt={profile.display_name} fill sizes="36px" className="object-cover" /> : profile.display_name.slice(0, 1).toUpperCase()}</button></header>;
 }
 
 function UserProfile({ session, profile, posts, onChanged, onSignOut, setError }: { session: Session; profile: Profile; posts: Post[]; onChanged: () => void; onSignOut: () => void; setError: (s: string) => void }) {
