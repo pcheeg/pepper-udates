@@ -349,13 +349,35 @@ function CropPhotoModal({ file, label, onCancel, onSave }: { file: File; label: 
 
 function BottomNav({ tab, setTab }: { tab: Tab; setTab: (t: Tab) => void }) { const items: [Tab, ReactNode, string][] = [["feed", <HomeIcon key="h" />, "Feed"], ["add", <PlusIcon key="a" />, "Add Pupdate"], ["scrapbook", <BookIcon key="b" />, "Scrapbook"], ["profile", <UserIcon key="u" />, "Profile"]]; return <nav className="fixed inset-x-0 bottom-0 z-30 mx-auto flex h-[calc(78px+env(safe-area-inset-bottom))] max-w-[680px] items-center justify-evenly border-t border-black/[.06] bg-white/95 px-6 pb-[env(safe-area-inset-bottom)] backdrop-blur">{items.map(([name, icon, label]) => <button key={name} aria-label={label} onClick={() => setTab(name)} className={`grid size-14 place-items-center rounded-full [&>svg]:size-7 ${tab === name ? "bg-[#eee6f5] text-[#7450a8]" : "text-[#827786]"}`}>{icon}</button>)}</nav>; }
 function PinchZoomImage({ src, alt }: { src: string; alt: string }) {
-  const [scale, setScale] = useState(1);
+  const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const startDistance = useRef<number | null>(null);
+  const startMidpoint = useRef({ x: 0, y: 0 });
+  const startBounds = useRef({ left: 0, top: 0, width: 0, height: 0 });
   function distance(touches: React.TouchList) { return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY); }
-  function start(event: React.TouchEvent<HTMLImageElement>) { if (event.touches.length === 2) startDistance.current = distance(event.touches); }
-  function move(event: React.TouchEvent<HTMLImageElement>) { if (event.touches.length !== 2 || !startDistance.current) return; event.preventDefault(); setScale(Math.min(4, Math.max(1, distance(event.touches) / startDistance.current))); }
-  function reset() { if (startDistance.current !== null) { startDistance.current = null; setScale(1); } }
-  return <Image src={src} alt={alt} width={1280} height={960} sizes="(max-width: 680px) 100vw, 680px" quality={72} loading="lazy" decoding="async" draggable={false} onTouchStart={start} onTouchMove={move} onTouchEnd={reset} onTouchCancel={reset} style={{ transform: `scale(${scale})`, transition: scale === 1 ? "transform 180ms ease-out" : "none", touchAction: "pan-y" }} className="block h-auto max-h-[min(80vh,850px)] w-full origin-center object-contain" />;
+  function midpoint(touches: React.TouchList) { return { x: (touches[0].clientX + touches[1].clientX) / 2, y: (touches[0].clientY + touches[1].clientY) / 2 }; }
+  function start(event: React.TouchEvent<HTMLImageElement>) {
+    if (event.touches.length !== 2) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    startDistance.current = distance(event.touches);
+    startMidpoint.current = midpoint(event.touches);
+    startBounds.current = { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
+  }
+  function move(event: React.TouchEvent<HTMLImageElement>) {
+    if (event.touches.length !== 2 || !startDistance.current) return;
+    event.preventDefault();
+    const scale = Math.min(4, Math.max(1, distance(event.touches) / startDistance.current));
+    const current = midpoint(event.touches);
+    const bounds = startBounds.current;
+    const focalX = startMidpoint.current.x - (bounds.left + bounds.width / 2);
+    const focalY = startMidpoint.current.y - (bounds.top + bounds.height / 2);
+    const maxX = bounds.width * (scale - 1) / 2;
+    const maxY = bounds.height * (scale - 1) / 2;
+    const x = Math.max(-maxX, Math.min(maxX, (1 - scale) * focalX + current.x - startMidpoint.current.x));
+    const y = Math.max(-maxY, Math.min(maxY, (1 - scale) * focalY + current.y - startMidpoint.current.y));
+    setTransform({ scale, x, y });
+  }
+  function reset() { if (startDistance.current !== null) { startDistance.current = null; setTransform({ scale: 1, x: 0, y: 0 }); } }
+  return <Image src={src} alt={alt} width={1280} height={960} sizes="(max-width: 680px) 100vw, 680px" quality={72} loading="lazy" decoding="async" draggable={false} onTouchStart={start} onTouchMove={move} onTouchEnd={reset} onTouchCancel={reset} style={{ transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`, transition: transform.scale === 1 ? "transform 180ms ease-out" : "none", touchAction: "pan-y" }} className="block h-auto max-h-[min(80vh,850px)] w-full origin-center object-contain" />;
 }
 function SlideButton({ left, onClick }: { left?: boolean; onClick: () => void }) { return <button type="button" aria-label={left ? "Previous photo" : "Next photo"} onClick={onClick} className={`absolute top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-full bg-white/90 shadow-lg ${left ? "left-3" : "right-3"}`}><ChevronIcon className={`size-5 ${left ? "rotate-180" : ""}`} /></button>; }
 function SaveIcon({ className = "" }: { className?: string }) { return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true"><path d="M12 3v12" /><path d="m7.5 10.5 4.5 4.5 4.5-4.5" /><path d="M5 14.5V20h14v-5.5" /></svg>; }
